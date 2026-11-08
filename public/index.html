@@ -161,6 +161,146 @@
       margin-bottom: 14px;
     }
 
+    .search-panel {
+      margin: 14px 0 18px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .search-form { display: flex; gap: 8px; }
+    .search-input-wrap { position: relative; flex: 1; min-width: 0; }
+    #searchInput {
+      width: 100%;
+      min-height: 44px;
+      padding: 10px 42px 10px 14px;
+      border: 1px solid rgba(255, 222, 228, 0.22);
+      border-radius: 12px;
+      background: #211519;
+      color: var(--text);
+      font: inherit;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    #searchInput::placeholder { color: var(--muted); opacity: 0.8; }
+    #searchInput:focus {
+      outline: none;
+      border-color: #fda4af;
+      box-shadow: 0 0 0 3px rgba(253, 164, 175, 0.14);
+    }
+    #clearSearch { position: absolute; top: 50%; right: 7px; transform: translateY(-50%); }
+    #clearSearch:hover { transform: translateY(calc(-50% - 1px)); }
+    .search-submit { min-width: 92px; }
+    .search-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+    #searchStatus[aria-busy="true"]::before {
+      content: "";
+      display: inline-block;
+      width: 0.8em;
+      height: 0.8em;
+      margin-right: 7px;
+      border: 2px solid rgba(255, 220, 228, 0.3);
+      border-top-color: #fda4af;
+      border-radius: 50%;
+      vertical-align: -0.1em;
+      animation: search-spin 0.8s linear infinite;
+    }
+    @keyframes search-spin { to { transform: rotate(360deg); } }
+    .search-history { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 12px; }
+    .search-history-label { color: var(--muted); font-size: 0.76rem; margin-right: 2px; }
+    .history-query { min-height: 32px; padding: 4px 10px; font-size: 0.78rem; }
+    .history-clear {
+      min-height: 32px;
+      padding: 4px 8px;
+      border-color: transparent;
+      background: transparent;
+      color: var(--muted);
+      font-size: 0.76rem;
+    }
+    .empty-state {
+      margin: 8px 0;
+      padding: 24px 14px;
+      border: 1px dashed var(--line);
+      border-radius: 12px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .library-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 0 0 14px;
+    }
+    .library-count { color: var(--muted); font-size: 0.84rem; }
+    .library-filter { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 0.82rem; }
+    #genreFilter {
+      min-width: 150px;
+      min-height: 38px;
+      padding: 6px 12px;
+      border-radius: 10px;
+      background: #211519;
+    }
+    #songs.library-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+      gap: 14px;
+    }
+    .library-grid .card {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 10px;
+      min-width: 0;
+      padding: 12px;
+      border-color: var(--line);
+      background: rgba(255, 255, 255, 0.02);
+      transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    }
+    .library-grid .card:hover {
+      transform: translateY(-3px);
+      border-color: rgba(251, 113, 133, 0.42);
+      box-shadow: 0 12px 24px rgba(2, 6, 23, 0.28);
+      background: rgba(159, 18, 57, 0.1);
+    }
+    .library-grid .card img {
+      width: 100%;
+      height: auto;
+      aspect-ratio: 1;
+      border-radius: 10px;
+    }
+    .library-grid .card .info { width: 100%; }
+    .library-grid .card .card-actions { display: flex; gap: 7px; }
+    .library-grid .card .card-actions button { flex: 1; min-width: 0; padding: 7px 8px; font-size: 0.78rem; }
+    .library-message {
+      grid-column: 1 / -1;
+      padding: 24px 16px;
+      border: 1px dashed var(--line);
+      border-radius: 12px;
+      color: var(--muted);
+      text-align: center;
+    }
+    .library-error { color: #ffe1e7; border-color: rgba(251, 113, 133, 0.34); }
+    .library-error button { margin-top: 12px; }
+    .skeleton-card { overflow: hidden; }
+    .skeleton-block {
+      border-radius: 8px;
+      background: linear-gradient(90deg, rgba(255,255,255,0.04), rgba(255,255,255,0.1), rgba(255,255,255,0.04));
+      background-size: 200% 100%;
+      animation: skeleton-shimmer 1.3s ease-in-out infinite;
+    }
+    .skeleton-art { width: 100%; aspect-ratio: 1; border-radius: 10px; }
+    .skeleton-line { height: 12px; width: 82%; margin-top: 4px; }
+    .skeleton-line.short { width: 56%; }
+    @keyframes skeleton-shimmer { to { background-position: -200% 0; } }
+
     .moods {
       display: flex;
       flex-wrap: wrap;
@@ -441,6 +581,16 @@
       .card { flex-wrap: wrap; }
       .card button { width: 100%; }
       .details { grid-template-columns: 1fr; }
+      .search-panel { padding: 11px; }
+      .search-form { flex-wrap: wrap; }
+      .search-submit { flex: 1; }
+      .search-meta { align-items: flex-start; flex-direction: column; gap: 2px; }
+      .library-toolbar { align-items: flex-start; flex-direction: column; }
+      .library-filter { width: 100%; }
+      #genreFilter { flex: 1; min-width: 0; }
+      .library-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+      .library-grid .card { padding: 9px; }
+      .library-grid .card .card-actions { flex-direction: column; }
     }
 
     :root {
@@ -633,7 +783,7 @@
     <div class="layout">
       <section class="panel" aria-labelledby="recommendationsHeading">
         <div class="panel-heading">
-          <h2 id="recommendationsHeading">เพลงที่แนะนำ</h2>
+          <h2 id="recommendationsHeading">Music Library</h2>
           <span class="tag" id="sortInfo" aria-live="polite">กำลังโหลด...</span>
         </div>
 
@@ -653,12 +803,37 @@
           </select>
         </div>
 
+        <section class="search-panel" aria-label="ค้นหาเพลง">
+          <form id="searchForm" class="search-form" role="search">
+            <label for="searchInput" class="sr-only">ค้นหาชื่อเพลง ศิลปิน อัลบั้ม หรือแนวเพลง</label>
+            <div class="search-input-wrap">
+              <input id="searchInput" type="search" autocomplete="off" placeholder="ค้นหาชื่อเพลง ศิลปิน อัลบั้ม หรือแนวเพลง">
+              <button id="clearSearch" type="button" aria-label="ล้างคำค้นหา" title="ล้างคำค้นหา">×</button>
+            </div>
+            <button class="search-submit primary" type="submit">ค้นหา</button>
+          </form>
+          <div class="search-meta">
+            <span id="searchStatus" role="status" aria-live="polite">แสดงเพลงตามอารมณ์ที่เลือก</span>
+            <span>ค้นหาใน iTunes · สูงสุด 20 ผลลัพธ์</span>
+          </div>
+          <div id="searchHistory" class="search-history" aria-label="ประวัติการค้นหา"></div>
+        </section>
+
         <section id="previewPlayer" aria-label="เครื่องเล่นตัวอย่างเพลง" aria-live="polite" hidden>
           <strong id="previewTitle">เลือกเพลงเพื่อฟังตัวอย่าง</strong>
           <span id="previewArtist"></span>
           <audio id="previewAudio" controls preload="none" aria-label="เล่นหรือหยุดตัวอย่างเพลง"></audio>
         </section>
-        <div id="songs" aria-live="polite" aria-label="รายการเพลง"></div>
+        <div class="library-toolbar">
+          <span id="libraryCount" class="library-count" aria-live="polite">โหลดแล้ว 0 รายการ</span>
+          <label class="library-filter" for="genreFilter">
+            ประเภทเพลง
+            <select id="genreFilter" aria-label="กรองตามประเภทเพลง">
+              <option value="all">ทุกประเภท</option>
+            </select>
+          </label>
+        </div>
+        <div id="songs" class="library-grid" aria-live="polite" aria-label="รายการเพลง"></div>
       </section>
 
       <div>

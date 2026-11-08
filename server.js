@@ -6,17 +6,31 @@ const { spawn } = require('child_process');
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 const ffmpegPath = require('ffmpeg-static');
+const {
+  Queue,
+  Stack,
+  selectionSort,
+  insertionSort,
+  bubbleSort,
+  indexSongsById,
+  undoQueueAction,
+} = require('./dsa');
+const { CatalogBatchError, createCatalog } = require('./catalog');
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
+app.use('/legacy', express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'client', 'dist')));
 app.use(express.static(path.join(__dirname, 'public')));
 
 const API_URL = 'https://itunes.apple.com/search';
 let songs = [];
 const songCatalog = new Map();
+let catalog = createCatalog();
 const previewJobs = new Map();
 const previewCacheDirectory = path.join(os.tmpdir(), 'music-mood-explorer-previews');
+let previewRequestTimeoutMs = 15_000;
 
 const fallbackSongs = JSON.parse(
   fs.readFileSync(path.join(__dirname, 'fallbackSongs.json'), 'utf8')
@@ -24,10 +38,12 @@ const fallbackSongs = JSON.parse(
 function normalizeSong(song, mood = 'chill', fallbackIndex = 0) {
   return {
     id: song.trackId || `${song.artistId || 'song'}-${fallbackIndex}`,
+    apiId: song.trackId || null,
     title: song.trackName || 'Untitled Track',
     artist: song.artistName || 'Unknown Artist',
     album: song.collectionName || 'Unknown Album',
     genre: song.primaryGenreName || 'Music',
+    apiGenre: song.primaryGenreName || '',
     image: song.artworkUrl100 || 'https://placehold.co/100x100/0f172a/ffffff?text=Music',
     preview: song.previewUrl || '',
     url: song.trackViewUrl || '#',
@@ -40,23 +56,28 @@ function normalizeSong(song, mood = 'chill', fallbackIndex = 0) {
 async function loadSongs(mood = 'chill') {
   const query = encodeURIComponent(mood || 'chill');
   const url = `${API_URL}?term=${query}&media=music&entity=song&limit=20`;
+  const apiStart = performance.now();
+  let apiMs;
 
   try {
     const res = await fetch(url);
     if (!res.ok) throw new Error('API ตอบ status ' + res.status);
 
     const data = await res.json();
+    apiMs = (performance.now() - apiStart).toFixed(3);
     const results = Array.isArray(data.results) ? data.results : [];
 
     songs = results.map((song, index) => normalizeSong(song, mood, index));
-    songs.forEach(song => songCatalog.set(String(song.id), song));
+    indexSongsById(songCatalog, songs);
 
     if (songs.length === 0) {
       throw new Error('ไม่มีรายการเพลงสำหรับ mood นี้');
     }
 
     console.log(`✅ โหลดเพลงจาก iTunes สำเร็จ: ${songs.length} เพลง (${mood})`);
+    return { success: true, apiMs };
   } catch (error) {
+    apiMs ??= (performance.now() - apiStart).toFixed(3);
     songs = fallbackSongs.map((song, index) => ({
       id: song.id || index + 1,
       title: song.title || 'Untitled Track',
@@ -70,48 +91,11 @@ async function loadSongs(mood = 'chill') {
       price: song.price || 0,
       mood: song.mood || mood,
     }));
-    songs.forEach(song => songCatalog.set(String(song.id), song));
+    indexSongsById(songCatalog, songs);
 
     console.log(`⚠️ ใช้ข้อมูลสำรองแทน (${error.message})`);
+    return { success: false, apiMs };
   }
-}
-
-function selectionSort(arr) {
-  const a = [...arr];
-  for (let i = 0; i < a.length - 1; i++) {
-    let maxIdx = i;
-    for (let j = i + 1; j < a.length; j++) {
-      if ((a[j].duration || 0) > (a[maxIdx].duration || 0)) maxIdx = j;
-    }
-    [a[i], a[maxIdx]] = [a[maxIdx], a[i]];
-  }
-  return a;
-}
-
-function insertionSort(arr) {
-  const a = [...arr];
-  for (let i = 1; i < a.length; i++) {
-    const key = a[i];
-    let j = i - 1;
-    while (j >= 0 && (a[j].duration || 0) < (key.duration || 0)) {
-      a[j + 1] = a[j];
-      j--;
-    }
-    a[j + 1] = key;
-  }
-  return a;
-}
-
-function bubbleSort(arr) {
-  const a = [...arr];
-  for (let i = 0; i < a.length - 1; i++) {
-    for (let j = 0; j < a.length - 1 - i; j++) {
-      if ((a[j].duration || 0) < (a[j + 1].duration || 0)) {
-        [a[j], a[j + 1]] = [a[j + 1], a[j]];
-      }
-    }
-  }
-  return a;
 }
 
 app.get('/moods', (req, res) => {
@@ -127,19 +111,131 @@ app.get('/moods', (req, res) => {
 });
 
 app.get('/songs', async (req, res) => {
+  if (req.query.search !== undefined && typeof req.query.search !== 'string') {
+    return res.status(400).json({ error: 'ค่า search ต้องมีเพียงหนึ่งคำค้นหา' });
+  }
+  const searchTerm = typeof req.query.search === 'string' ? req.query.search.trim() : '';
   const mood = req.query.mood || 'chill';
   const algo = req.query.sort || 'selection';
-  const t0 = performance.now();
+  let resultSongs;
+  let source = 'itunes';
+  let apiMs;
+  if (searchTerm && req.query.searchPage !== undefined) {
+    const pageValue = String(req.query.searchPage);
+    const page = /^\d+$/.test(pageValue) ? Number(pageValue) : NaN;
+    let searchResult;
+    try {
+      searchResult = await catalog.loadSearchBatch(searchTerm, page, normalizeSong);
+    } catch (error) {
+      if (error instanceof RangeError) {
+        return res.status(400).json({ error: 'ค่า searchPage หรือ search ไม่ถูกต้อง' });
+      }
+      console.error(`⚠️ ค้นหาเพลงแบบหลายชุดไม่สำเร็จ (${searchTerm}, ${page}): ${error.message}`);
+      return res.status(500).json({ error: 'ค้นหาเพลงไม่สำเร็จ กรุณาลองอีกครั้ง' });
+    }
 
-  await loadSongs(mood);
+    apiMs = searchResult.apiMs;
+    resultSongs = searchResult.data;
+    indexSongsById(songCatalog, resultSongs);
+    const sortStart = performance.now();
+    let sorted;
+    if (algo === 'insertion') sorted = insertionSort(resultSongs);
+    else if (algo === 'bubble') sorted = bubbleSort(resultSongs);
+    else sorted = selectionSort(resultSongs);
+    const ms = (performance.now() - sortStart).toFixed(3);
+    return res.json({
+      mood,
+      search: searchTerm,
+      source,
+      algorithm: algo,
+      count: sorted.length,
+      apiMs,
+      ms,
+      data: sorted,
+      searchPage: searchResult.searchPage,
+      hasMore: searchResult.hasMore,
+      failedQueries: searchResult.failedQueries,
+    });
+  } else if (!searchTerm && req.query.catalogPage !== undefined) {
+    const pageValue = String(req.query.catalogPage);
+    const page = /^\d+$/.test(pageValue) ? Number(pageValue) : NaN;
+    let catalogResult;
+    try {
+      catalogResult = await catalog.loadMoodBatch(mood, page, normalizeSong);
+    } catch (error) {
+      if (error instanceof CatalogBatchError) {
+        console.error(`⚠️ โหลด catalog batch ไม่สำเร็จ (${mood}, ${page}): ${error.message}`);
+        return res.status(502).json({
+          error: page === 0
+            ? 'โหลดเพลงจาก iTunes ไม่สำเร็จ กรุณาลองอีกครั้ง'
+            : 'โหลดเพลงเพิ่มเติมไม่สำเร็จ กรุณาลองอีกครั้ง',
+          catalogPage: page,
+          failedQueries: error.failedQueries,
+        });
+      }
+      if (error instanceof RangeError) {
+        return res.status(400).json({ error: 'ค่า catalogPage หรือ mood ไม่ถูกต้อง' });
+      }
+      console.error(`⚠️ โหลด Music Library ไม่สำเร็จ: ${error.message}`);
+      return res.status(500).json({ error: 'โหลด Music Library ไม่สำเร็จ กรุณาลองอีกครั้ง' });
+    }
+    apiMs = catalogResult.apiMs;
+    resultSongs = catalogResult.data;
+    indexSongsById(songCatalog, resultSongs);
 
+    const sortStart = performance.now();
+    let sorted;
+    if (algo === 'insertion') sorted = insertionSort(resultSongs);
+    else if (algo === 'bubble') sorted = bubbleSort(resultSongs);
+    else sorted = selectionSort(resultSongs);
+    const ms = (performance.now() - sortStart).toFixed(3);
+    return res.json({
+      mood,
+      search: null,
+      source,
+      algorithm: algo,
+      count: sorted.length,
+      apiMs,
+      ms,
+      data: sorted,
+      catalogPage: catalogResult.catalogPage,
+      hasMore: catalogResult.hasMore,
+      failedQueries: catalogResult.failedQueries,
+    });
+  } else if (searchTerm) {
+    const apiStart = performance.now();
+    try {
+      const url = `${API_URL}?term=${encodeURIComponent(searchTerm)}&media=music&entity=song&limit=20`;
+      const response = await fetch(url);
+      if (!response.ok) throw new Error('API ตอบ status ' + response.status);
+
+      const data = await response.json();
+      apiMs = (performance.now() - apiStart).toFixed(3);
+      const term = searchTerm.toLowerCase();
+      resultSongs = (Array.isArray(data.results) ? data.results : [])
+        .filter(song => [song.trackName, song.artistName, song.collectionName, song.primaryGenreName]
+          .some(value => typeof value === 'string' && value.toLowerCase().includes(term)))
+        .map((song, index) => normalizeSong(song, mood, index));
+      indexSongsById(songCatalog, resultSongs);
+    } catch (error) {
+      console.error(`⚠️ ค้นหาเพลงไม่สำเร็จ (${searchTerm}): ${error.message}`);
+      return res.status(502).json({ error: 'ค้นหาเพลงไม่สำเร็จ กรุณาลองอีกครั้ง' });
+    }
+  } else {
+    const loadResult = await loadSongs(mood);
+    apiMs = loadResult.apiMs;
+    if (!loadResult.success) source = 'fallback';
+    resultSongs = songs;
+  }
+
+  const sortStart = performance.now();
   let sorted;
-  if (algo === 'insertion') sorted = insertionSort(songs);
-  else if (algo === 'bubble') sorted = bubbleSort(songs);
-  else sorted = selectionSort(songs);
+  if (algo === 'insertion') sorted = insertionSort(resultSongs);
+  else if (algo === 'bubble') sorted = bubbleSort(resultSongs);
+  else sorted = selectionSort(resultSongs);
 
-  const ms = (performance.now() - t0).toFixed(3);
-  res.json({ mood, algorithm: algo, count: sorted.length, ms, data: sorted });
+  const ms = (performance.now() - sortStart).toFixed(3);
+  res.json({ mood, search: searchTerm || null, source, algorithm: algo, count: sorted.length, apiMs, ms, data: sorted });
 });
 
 async function getMp3Preview(song) {
@@ -155,33 +251,40 @@ async function getMp3Preview(song) {
     if (!ffmpegPath) throw new Error('ไม่พบ FFmpeg สำหรับแปลงเสียง');
     await fs.promises.mkdir(previewCacheDirectory, { recursive: true });
     const tempPath = `${cachePath}.${process.pid}.tmp`;
-    const upstream = await fetch(song.preview);
-    if (!upstream.ok || !upstream.body) throw new Error('ดาวน์โหลดตัวอย่างเพลงไม่สำเร็จ');
-
-    const ffmpeg = spawn(ffmpegPath, [
-      '-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-vn',
-      '-codec:a', 'libmp3lame', '-q:a', '5', '-f', 'mp3', tempPath,
-    ], { stdio: ['pipe', 'ignore', 'pipe'] });
-    let ffmpegError = '';
-    ffmpeg.stderr.on('data', chunk => { ffmpegError += chunk.toString(); });
-    const conversion = new Promise((resolve, reject) => {
-      ffmpeg.once('error', reject);
-      ffmpeg.once('close', code => {
-        if (code === 0) resolve();
-        else reject(new Error(ffmpegError || `FFmpeg exited with code ${code}`));
-      });
-    });
-
-    const inputStream = pipeline(Readable.fromWeb(upstream.body), ffmpeg.stdin);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), previewRequestTimeoutMs);
+    let ffmpeg;
+    let conversion;
+    let inputStream;
     try {
+      const upstream = await fetch(song.preview, { signal: controller.signal });
+      if (!upstream.ok || !upstream.body) throw new Error('ดาวน์โหลดตัวอย่างเพลงไม่สำเร็จ');
+
+      ffmpeg = spawn(ffmpegPath, [
+        '-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-vn',
+        '-codec:a', 'libmp3lame', '-q:a', '5', '-f', 'mp3', tempPath,
+      ], { stdio: ['pipe', 'ignore', 'pipe'] });
+      let ffmpegError = '';
+      ffmpeg.stderr.on('data', chunk => { ffmpegError += chunk.toString(); });
+      conversion = new Promise((resolve, reject) => {
+        ffmpeg.once('error', reject);
+        ffmpeg.once('close', code => {
+          if (code === 0) resolve();
+          else reject(new Error(ffmpegError || `FFmpeg exited with code ${code}`));
+        });
+      });
+
+      inputStream = pipeline(Readable.fromWeb(upstream.body), ffmpeg.stdin);
       await Promise.all([inputStream, conversion]);
       await fs.promises.rename(tempPath, cachePath);
       return cachePath;
     } catch (error) {
-      if (ffmpeg.exitCode === null && !ffmpeg.killed) ffmpeg.kill();
-      await Promise.allSettled([inputStream, conversion]);
+      if (ffmpeg && ffmpeg.exitCode === null && !ffmpeg.killed) ffmpeg.kill();
+      await Promise.allSettled([inputStream, conversion].filter(Boolean));
       await fs.promises.rm(tempPath, { force: true });
       throw error;
+    } finally {
+      clearTimeout(timeout);
     }
   })();
 
@@ -239,27 +342,39 @@ app.get('/preview/:id', async (req, res) => {
   }
 });
 
-class Queue {
-  constructor() { this.items = []; }
-  enqueue(item) { this.items.push(item); }
-  dequeue() { return this.items.shift(); }
-  peek() { return this.items[0]; }
-  size() { return this.items.length; }
-  isEmpty() { return this.items.length === 0; }
-}
-
 const watchlist = new Queue();
+
+function timestampedAction(action) {
+  const now = new Date();
+  return {
+    ...action,
+    time: now.toLocaleTimeString('th-TH'),
+    timestamp: now.toISOString(),
+  };
+}
 
 app.get('/watchlist', (req, res) => {
   res.json({ items: watchlist.items, size: watchlist.size(), next: watchlist.peek() || null });
 });
 
 app.post('/watchlist', (req, res) => {
-  const song = songs.find(item => item.id === Number(req.body.id));
+  if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+    return res.status(400).json({ error: 'กรุณาส่งข้อมูลเพลงในรูปแบบ JSON object' });
+  }
+  if (!Object.hasOwn(req.body, 'id')) {
+    return res.status(400).json({ error: 'กรุณาระบุ id เพลง' });
+  }
+  if ((typeof req.body.id !== 'string' && typeof req.body.id !== 'number')
+    || String(req.body.id).trim() === ''
+    || (typeof req.body.id === 'number' && !Number.isFinite(req.body.id))) {
+    return res.status(400).json({ error: 'id เพลงไม่ถูกต้อง' });
+  }
+  const song = songCatalog.get(String(req.body.id)) || songs.find(item => String(item.id) === String(req.body.id));
   if (!song) return res.status(404).json({ error: 'ไม่พบเพลงที่เลือก' });
 
+  const index = watchlist.size();
   watchlist.enqueue(song);
-  history.push({ action: 'ADD', song, time: new Date().toLocaleTimeString('th-TH') });
+  history.push(timestampedAction({ action: 'ADD', song, index }));
 
   res.status(201).json({ message: `เพิ่ม ${song.title} เข้าคิวแล้ว`, size: watchlist.size() });
 });
@@ -268,43 +383,79 @@ app.delete('/watchlist/process', (req, res) => {
   if (watchlist.size() === 0) return res.status(400).json({ error: 'คิวว่าง' });
 
   const song = watchlist.dequeue();
-  history.push({ action: 'WATCH', song, time: new Date().toLocaleTimeString('th-TH') });
+  history.push(timestampedAction({ action: 'WATCH', song }));
 
   res.json({ message: `กำลังฟัง ${song.title} แล้ว`, song, size: watchlist.size() });
 });
 
-class Stack {
-  constructor() { this.items = []; }
-  push(item) { this.items.push(item); }
-  pop() { return this.items.pop(); }
-  peek() { return this.items[this.items.length - 1]; }
-  isEmpty() { return this.items.length === 0; }
-  display() { return [...this.items].reverse(); }
-}
+app.delete('/watchlist/items/:index', (req, res) => {
+  const index = Number(req.params.index);
+  if (!Number.isInteger(index) || index < 0 || index >= watchlist.size()) {
+    return res.status(404).json({ error: 'ไม่พบรายการนี้ในคิว' });
+  }
+
+  const song = watchlist.removeAt(index);
+  history.push(timestampedAction({ action: 'REMOVE', song, index }));
+  res.json({ message: `นำ ${song.title} ออกจากคิวแล้ว`, size: watchlist.size() });
+});
+
+app.delete('/watchlist', (req, res) => {
+  if (watchlist.isEmpty()) return res.status(400).json({ error: 'คิวว่าง' });
+
+  const songs = watchlist.clear();
+  history.push(timestampedAction({
+    action: 'CLEAR',
+    song: songs[songs.length - 1],
+    songs,
+    count: songs.length,
+  }));
+  res.json({ message: `ล้างคิว ${songs.length} เพลงแล้ว`, size: watchlist.size() });
+});
 
 const history = new Stack();
 
 app.get('/history', (req, res) => {
-  res.json({ history: history.display(), size: history.items.length });
+  res.json({ history: history.display(), size: history.size() });
 });
 
 app.post('/undo', (req, res) => {
   if (history.isEmpty()) return res.status(400).json({ error: 'ไม่มีอะไรให้ย้อนกลับ' });
 
   const last = history.pop();
-
-  if (last.action === 'ADD') {
-    watchlist.items.pop();
-  } else if (last.action === 'WATCH') {
-    watchlist.items.unshift(last.song);
+  if (!undoQueueAction(watchlist, last)) {
+    history.push(last);
+    return res.status(409).json({ error: 'ไม่สามารถย้อนการกระทำล่าสุดได้ เนื่องจากคิวเปลี่ยนแปลงแล้ว' });
   }
 
-  res.json({ message: `ย้อน ${last.action} ของ ${last.song.title} แล้ว`, size: watchlist.size() });
+  const description = last.action === 'CLEAR'
+    ? `ล้างคิว ${last.count} เพลง`
+    : `${last.action} ของ ${last.song.title}`;
+  res.json({ message: `ย้อน ${description} แล้ว`, size: watchlist.size() });
 });
 
-loadSongs();
+app.use((error, req, res, next) => {
+  if (res.headersSent) return next(error);
+  if (error.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'รูปแบบ JSON ในคำขอไม่ถูกต้อง' });
+  }
+  if (error.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'ข้อมูลในคำขอมีขนาดใหญ่เกินไป' });
+  }
+  console.error(`⚠️ คำขอ API ผิดพลาด: ${error.message}`);
+  return res.status(500).json({ error: 'เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์ กรุณาลองอีกครั้ง' });
+});
+
+function resetForTests({ requestTimeoutMs, previewTimeoutMs } = {}) {
+  songs = [];
+  songCatalog.clear();
+  watchlist.clear();
+  history.items.length = 0;
+  catalog = createCatalog(requestTimeoutMs === undefined ? {} : { requestTimeoutMs });
+  previewRequestTimeoutMs = previewTimeoutMs === undefined ? 15_000 : previewTimeoutMs;
+}
 
 if (require.main === module) {
+  loadSongs();
   const startServer = (port) => {
     const server = app.listen(port, () => {
       console.log(`🚀 http://localhost:${port}`);
@@ -324,4 +475,5 @@ if (require.main === module) {
   startServer(PORT);
 }
 
+app.resetForTests = resetForTests;
 module.exports = app;
