@@ -3,6 +3,7 @@ const { defineConfig } = require('vite');
 
 module.exports = defineConfig({
   root: path.join(__dirname, 'client'),
+  base: '/app/',
   server: {
     port: 5173,
     proxy: {
@@ -15,7 +16,8 @@ module.exports = defineConfig({
     },
   },
   build: {
-    outDir: path.join(__dirname, 'client', 'dist'),
+    outDir: path.join(__dirname, 'public', 'app'),
     emptyOutDir: true,
   },
 });
+

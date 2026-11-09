@@ -20,9 +20,9 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
-app.use('/legacy', express.static(path.join(__dirname, 'public')));
-app.use(express.static(path.join(__dirname, 'client', 'dist')));
-app.use(express.static(path.join(__dirname, 'public')));
+app.use('/legacy', express.static(path.join(__dirname, 'public', 'legacy')));
+app.use('/app', express.static(path.join(__dirname, 'public', 'app')));
+app.use(express.static(path.join(__dirname, 'public', 'app')));
 
 const API_URL = 'https://itunes.apple.com/search';
 let songs = [];
